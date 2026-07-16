@@ -1,0 +1,26 @@
+# Environment Variables & Secrets
+.env
+cookies.txt
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Python Compilation Artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database States
+media_engine.db
+
+# Future Next.js Frontend Build Outputs (Pre-emptive)
+out/
+.next/
+node_modules/
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
