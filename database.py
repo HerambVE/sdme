@@ -1,9 +1,11 @@
+import os
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import delete
 
-DATABASE_URL = "sqlite+aiosqlite:///./media_engine.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./media_engine.db")
+
 
 # connect_args disables thread checking (required for SQLite in async contexts)
 engine = create_async_engine(
@@ -18,6 +20,23 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 Base = declarative_base()
+
+def remove_database_file():
+    db_path = "media_engine.db"
+    if "sqlite" in DATABASE_URL:
+        parts = DATABASE_URL.split(":///")
+        if len(parts) > 1:
+            db_path = parts[-1]
+
+    for suffix in ["", "-wal", "-shm", "-journal"]:
+        target = f"{db_path}{suffix}"
+        if os.path.exists(target):
+            try:
+                os.remove(target)
+                print(f"[DB CLEANUP] Removed {target}")
+            except Exception as e:
+                print(f"[DB CLEANUP] Failed to remove {target}: {e}")
+
 
 async def purge_stale_records(days_to_keep: int = 30):
     # Local import prevents circular dependency with models.py

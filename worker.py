@@ -6,23 +6,39 @@ from google.genai import types, errors
 from urllib.parse import quote
 import json
 import os
+import re
 import requests
 import subprocess
 import sys
 import uuid
 import whisper
+import xml.etree.ElementTree as ET
 
-# Force installation of latest nightly yt-dlp build and ddgs package
+# Force installation of nightly yt-dlp build for latest extractor patches
 subprocess.check_call(
-    [sys.executable, "-m", "pip", "install", "-U", "--pre", "yt-dlp", "ddgs"], 
+    [sys.executable, "-m", "pip", "install", "-U", "--pre", "yt-dlp"], 
     stdout=subprocess.DEVNULL, 
     stderr=subprocess.DEVNULL
 )
 
 import yt_dlp
-from ddgs import DDGS
 
 load_dotenv()
+
+def parse_json_safely(raw_text: str, default_val):
+    if not raw_text:
+        return default_val
+    try:
+        # Isolate the outermost JSON object or array bounds using Regex
+        match = re.search(r'(\{.*\}|\[.*\])', raw_text, re.DOTALL)
+        if match:
+            return json.loads(match.group(1))
+        
+        # Fallback to direct parsing if regex fails to find brackets
+        return json.loads(raw_text)
+    except Exception as e:
+        print(f"[ERROR] JSON parsing failed: {e}. Raw text: {raw_text}")
+        return default_val
 
 class prompt:
     def __init__(self, text: str):
@@ -30,11 +46,11 @@ class prompt:
         
         self.summary = f"""Analyze the provided transcript and compress it into a dense, single-paragraph summary. Your response must state the exact motive, thesis, or problem resolved in the video immediately within the first two sentences without any narrative suspense, hooks, or introductory filler. Output only the summary paragraph. Transcript: {text}"""
         
-        self.topics = f"""Analyze the provided transcript and break it down into its core structural components. Return a JSON array of objects, where each object represents a distinct topic or module discussed in chronological order and contains exactly two keys: "topic_title" (a concise name for the section) and "core_takeaway" (the primary factual point or lesson from that section). Transcript: {text}"""
+        self.topics = f"""Analyze the provided transcript and break it down into its core structural components with exhaustive conceptual depth. Return a JSON array of objects in chronological order, where each object contains exactly three keys: "topic_title" (a concise name for the section), "core_takeaway" (the primary factual point or lesson from that section), and "concept_explanation" (an extensive, highly detailed, and rigorous explanation of the topic that breaks down the underlying mechanisms, theoretical frameworks, technical nuances, and context in full depth). Transcript: {text}"""
         
-        self.explore = f"""Analyze the provided transcript and determine the next logical learning steps. Return a JSON array of strings containing exactly 3 search queries. These queries must be optimized for a search engine (2-4 words maximum, e.g., 'Bayesian epistemology basics', 'cognitive dissonance history'). Do not return conversational sentences. Transcript: {text}"""
+        self.explore = f"""Analyze the provided transcript and determine the next logical learning steps. Return a JSON array of strings containing exactly 3 search terms. Each string must be a single word or concise phrase (1-3 words maximum, e.g., 'Epistemology', 'Cognitive Dissonance', 'Game Theory') representing a core theoretical concept or domain optimized for querying Wikipedia directly. Do not return full sentences. Transcript: {text}"""
         
-        self.proof = f"""Analyze the provided transcript and identify the core theoretical frameworks or factual claims. Return a JSON array of strings containing exact search engine queries to find supporting materials. The queries must be strictly optimized for academic and web search (2-5 words maximum, e.g., 'Leon Festinger dissonance study', 'ego depletion empirical data'). Generate no more than 5 queries. Do not return full sentences or claims. Transcript: {text}"""
+        self.proof = f"""Analyze the provided transcript and identify the core theoretical frameworks, scientific claims, or foundational models. Return a JSON array of strings containing up to 5 terms. Each string must be a single word or concise phrase (1-3 words maximum, e.g., 'Ego Depletion', 'Bayesian Inference', 'Social Proof') representing an established topic or claim suitable for a direct Wikipedia entry lookup. Do not return full claims or sentences. Transcript: {text}"""
 
 class Meta: 
     def __init__(self):
@@ -45,25 +61,28 @@ class Meta:
         self.proof = None
         self.tag = None
 
-    async def get_data(self, transcript):
+    async def get_data(self, transcript, custom_api_key=None):
         print("[DEBUG] Entering Meta.get_data sequence.")
-        api_key = os.getenv("API_KEY")
+        api_key = custom_api_key or os.getenv("API_KEY")
         if not api_key:
             print("[ERROR] API_KEY environment variable is missing or None.")
         else:
-            print(f"[DEBUG] API_KEY loaded successfully (Length: {len(api_key)} characters).")
+            key_source = "user custom header" if custom_api_key else "environment default"
+            print(f"[DEBUG] Gemini API key loaded via {key_source} (Length: {len(api_key)} characters).")
 
         client = genai.Client(api_key=api_key)
+
         text = prompt(transcript)
         json_config = types.GenerateContentConfig(response_mime_type="application/json")
         
         try:
             print("[DEBUG] Executing Gemini API Request: Tags and Jargons...")
             tnj = await client.aio.models.generate_content(model="gemini-3.1-flash-lite", contents=text.tagnjargon, config=json_config)
+            tnj_text = tnj.text if hasattr(tnj, 'text') else "{}"
             print("[DEBUG] Request for Tags and Jargons Successful!")
         except errors.ClientError as e:
             print(f"[ERROR] Gemini API (Tags and Jargons): {e.code} - {e.message}")
-            tnj = type('obj', (object,), {'text': '{}'})
+            tnj_text = "{}"
 
         print("[DEBUG] Applying 6.5s rate-limit sleep...")
         await asyncio.sleep(6.5)
@@ -71,10 +90,11 @@ class Meta:
         try:
             print("[DEBUG] Executing Gemini API Request: Proofs...")
             proof = await client.aio.models.generate_content(model="gemini-3.1-flash-lite", contents=text.proof, config=json_config)
+            proof_text = proof.text if hasattr(proof, 'text') else "[]"
             print("[DEBUG] Request for Proofs Successful!")
         except errors.ClientError as e:
             print(f"[ERROR] Gemini API (Proofs): {e.code} - {e.message}")
-            proof = type('obj', (object,), {'text': '[]'})
+            proof_text = "[]"
 
         print("[DEBUG] Applying 6.5s rate-limit sleep...")
         await asyncio.sleep(6.5)
@@ -82,10 +102,11 @@ class Meta:
         try:
             print("[DEBUG] Executing Gemini API Request: Explore...")
             explore = await client.aio.models.generate_content(model="gemini-3.1-flash-lite", contents=text.explore, config=json_config)    
+            explore_text = explore.text if hasattr(explore, 'text') else "[]"
             print("[DEBUG] Request for Explore Successful!")
         except errors.ClientError as e:
             print(f"[ERROR] Gemini API (Explore): {e.code} - {e.message}")
-            explore = type('obj', (object,), {'text': '[]'})
+            explore_text = "[]"
 
         print("[DEBUG] Applying 6.5s rate-limit sleep...")
         await asyncio.sleep(6.5)
@@ -93,10 +114,11 @@ class Meta:
         try:
             print("[DEBUG] Executing Gemini API Request: Topics...")
             topics = await client.aio.models.generate_content(model="gemini-3.1-flash-lite", contents=text.topics, config=json_config)    
+            topics_text = topics.text if hasattr(topics, 'text') else "[]"
             print("[DEBUG] Request for Topics Successful!")
         except errors.ClientError as e:
             print(f"[ERROR] Gemini API (Topics): {e.code} - {e.message}")
-            topics = type('obj', (object,), {'text': '[]'})
+            topics_text = "[]"
 
         print("[DEBUG] Applying 6.5s rate-limit sleep...")
         await asyncio.sleep(6.5)
@@ -104,25 +126,29 @@ class Meta:
         try:
             print("[DEBUG] Executing Gemini API Request: Summary...")
             summary = await client.aio.models.generate_content(model="gemini-3.1-flash-lite", contents=text.summary)    
+            summary_text = summary.text.strip() if hasattr(summary, 'text') and summary.text else ""
             print("[DEBUG] Request for Summary Successful!")
         except errors.ClientError as e:
             print(f"[ERROR] Gemini API (Summary): {e.code} - {e.message}")
-            summary = type('obj', (object,), {'text': ''})
+            summary_text = ""
 
         print("[DEBUG] Exiting Meta.get_data sequence successfully.")
+        
         return {
-            "tnj": tnj.text,
-            "proof": proof.text,
-            "explore": explore.text,
-            "topics": topics.text,
-            "summary": summary.text
+            "tnj": parse_json_safely(tnj_text, {"categories": [], "jargons": []}),
+            "proof": parse_json_safely(proof_text, []),
+            "explore": parse_json_safely(explore_text, []),
+            "topics": parse_json_safely(topics_text, []),
+            "summary": summary_text
         }
 
+redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
 celery_app = Celery(
     "sdme-celery",
-    broker="redis://redis:6379/0",
-    backend="redis://redis:6379/0"
+    broker=redis_url,
+    backend=redis_url
 )
+
 
 print("[DEBUG] Loading Whisper model (base)...")
 model = whisper.load_model("base")
@@ -141,7 +167,6 @@ def get_media(url: str):
     unique_id = str(uuid.uuid4())
     final_mp3_path = os.path.join(tmp_dir, f"{unique_id}.mp3")
 
-    # Strategy 1: Direct media stream download
     try:
         print("[DEBUG] Attempting direct requests stream...")
         obj = requests.get(url, stream=True, headers=HUMAN_HEADERS, timeout=7)
@@ -176,47 +201,49 @@ def get_media(url: str):
     except Exception as e:
         print(f"[DEBUG] Direct stream bypass skipped ({e}). Initiating yt-dlp fallback pipeline...")
 
-    # Strategy 2: yt-dlp with iterative player client rotation
-    client_strategies = [
-        ['ios', 'mweb'],
-        ['android', 'tv'],
-        ['web', 'tv_embedded']
-    ]
+    print("[DEBUG] Attempting yt-dlp extraction...")
+    warp_proxy = os.getenv("WARP_PROXY")
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': os.path.join(tmp_dir, f"{unique_id}.%(ext)s"),
+        'source_address': '0.0.0.0', 
+        'sponsorblock_remove': ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction'],
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        },
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'quiet': True,
+        'no_warnings': True,
+    }
 
-    last_exception = None
-    for clients in client_strategies:
-        print(f"[DEBUG] Attempting yt-dlp extraction with player_client: {clients}")
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(tmp_dir, f"{unique_id}.%(ext)s"),
-            'extractor_args': {
-                'youtube': {
-                    'player_client': clients
-                }
-            },
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'geo_bypass': True,
-        }
+    if warp_proxy:
+        print(f"[DEBUG] Routing yt-dlp through proxy: {warp_proxy}")
+        ydl_opts['proxy'] = warp_proxy
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            
-            if os.path.exists(final_mp3_path):
-                print(f"[DEBUG] yt-dlp extraction successful using clients: {clients}")
-                return final_mp3_path
-        except Exception as ydl_err:
-            print(f"[DEBUG] Strategy {clients} failed: {ydl_err}")
-            last_exception = ydl_err
+    if os.path.exists("cookies.txt"):
+        print("[DEBUG] Applying cookies.txt authentication to yt-dlp.")
+        ydl_opts['cookiefile'] = "cookies.txt"
 
-    raise RuntimeError(f"All media retrieval strategies failed. Last exception: {last_exception}")
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        if os.path.exists(final_mp3_path):
+            print("[DEBUG] yt-dlp extraction successful.")
+            return final_mp3_path
+    except Exception as ydl_err:
+        print(f"[DEBUG] yt-dlp extraction failed: {ydl_err}")
+        raise RuntimeError(f"All media retrieval strategies failed. Last exception: {ydl_err}")
+
+    raise RuntimeError("Extraction completed but final mp3 path does not exist.")
 
 def format_timestamped_transcript(segments: list) -> list[dict]:
     timeline = []
@@ -228,115 +255,163 @@ def format_timestamped_transcript(segments: list) -> list[dict]:
         })
     return timeline
 
-async def fetch_ddg_search(query: str) -> list[dict]:
-    def sync_call():
-        results_formatted = []
-        try:
-            with DDGS() as ddgs:
-                results = ddgs.text(query, max_results=3)
-                for r in results:
-                    results_formatted.append({
-                        "title": r.get("title"),
-                        "url": r.get("href"),
-                        "snippet": r.get("body")
-                    })
-        except Exception as e:
-            print(f"[ERROR] DuckDuckGo Search Error for query '{query}': {e}")
-        return results_formatted
-
-    return await asyncio.to_thread(sync_call)
-
-async def fetch_wiki_jargon(query: str) -> dict:
-    def sync_call():
-        headers = {"User-Agent": "SemanticDriftMediaEngine/1.0 (contact@example.com)"}
-        encoded_query = quote(query.strip())
-        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_query}"
-        try:
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code != 200:
+async def fetch_wiki_summary(query: str, sem: asyncio.Semaphore) -> dict:
+    async with sem:
+        def sync_call():
+            headers = {"User-Agent": "SemanticDriftMediaEngine/1.0 (contact@example.com)"}
+            encoded_query = quote(query.strip())
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_query}"
+            try:
+                response = requests.get(url, headers=headers, timeout=5)
+                if response.status_code != 200:
+                    return {}
+                data = response.json()
+                return {
+                    "title": data.get("title"),
+                    "url": data.get("content_urls", {}).get("desktop", {}).get("page"),
+                    "snippet": data.get("extract"),
+                    "source": "Wikipedia"
+                }
+            except Exception as e:
+                print(f"[ERROR] Wikipedia API Error for query '{query}': {e}")
                 return {}
-            data = response.json()
-            return {
-                "title": data.get("title"),
-                "url": data.get("content_urls", {}).get("desktop", {}).get("page"),
-                "snippet": data.get("extract")
-            }
-        except Exception as e:
-            print(f"[ERROR] Wikipedia API Error for jargon '{query}': {e}")
-            return {}
+        
+        return await asyncio.to_thread(sync_call)
 
-    return await asyncio.to_thread(sync_call)
+async def fetch_arxiv_paper(query: str, sem: asyncio.Semaphore) -> dict:
+    async with sem:
+        def sync_call():
+            encoded_query = quote(query.strip())
+            url = f"https://export.arxiv.org/api/query?search_query=all:{encoded_query}&start=0&max_results=1"
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code != 200:
+                    return {}
+                root = ET.fromstring(response.content)
+                ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                entry = root.find('atom:entry', ns)
+                if entry is None:
+                    return {}
+                
+                title_elem = entry.find('atom:title', ns)
+                id_elem = entry.find('atom:id', ns)
+                summary_elem = entry.find('atom:summary', ns)
+                author_elem = entry.find('atom:author/atom:name', ns)
+                
+                title = title_elem.text.strip().replace("\n", " ") if title_elem is not None and title_elem.text else query
+                paper_url = id_elem.text.strip() if id_elem is not None and id_elem.text else f"https://arxiv.org/search/?query={encoded_query}"
+                snippet = summary_elem.text.strip().replace("\n", " ") if summary_elem is not None and summary_elem.text else ""
+                author = author_elem.text.strip() if author_elem is not None and author_elem.text else "arXiv Research"
+                
+                return {
+                    "title": title,
+                    "url": paper_url,
+                    "snippet": snippet[:260] + "..." if len(snippet) > 260 else snippet,
+                    "source": "arXiv",
+                    "author": author
+                }
+            except Exception as e:
+                print(f"[ERROR] arXiv API Error for query '{query}': {e}")
+                return {}
+
+        return await asyncio.to_thread(sync_call)
+
+async def fetch_openalex_paper(query: str, sem: asyncio.Semaphore) -> dict:
+    async with sem:
+        def sync_call():
+            headers = {"User-Agent": "SemanticDriftMediaEngine/1.0 (contact@example.com)"}
+            encoded_query = quote(query.strip())
+            url = f"https://api.openalex.org/works?search={encoded_query}&per-page=1"
+            try:
+                response = requests.get(url, headers=headers, timeout=5)
+                if response.status_code != 200:
+                    return {}
+                data = response.json()
+                results = data.get("results", [])
+                if not results:
+                    return {}
+                work = results[0]
+                
+                title = work.get("title") or query
+                landing_url = work.get("doi") or work.get("primary_location", {}).get("landing_page_url") or f"https://openalex.org/works?search={encoded_query}"
+                source_name = work.get("primary_location", {}).get("source", {}).get("display_name") or "OpenAlex Index"
+                pub_year = work.get("publication_year")
+                
+                return {
+                    "title": title,
+                    "url": landing_url,
+                    "snippet": f"Published work in {source_name} ({pub_year})." if pub_year else f"Published work in {source_name}.",
+                    "source": source_name,
+                    "year": pub_year
+                }
+            except Exception as e:
+                print(f"[ERROR] OpenAlex API Error for query '{query}': {e}")
+                return {}
+
+        return await asyncio.to_thread(sync_call)
 
 async def process_external_indexing(meta_data: dict) -> dict:
-    print("[DEBUG] Entering process_external_indexing.")
+    print("[DEBUG] Entering process_external_indexing (Wikipedia, arXiv, OpenAlex API lookups).")
+    sem = asyncio.Semaphore(4)
     enriched_data = {
-        "ddg_explore_results": {},
-        "ddg_proof_results": {},
         "wikipedia_jargon_results": {},
-        "ddg_topics_results": {}
+        "wikipedia_proof_results": {},
+        "wikipedia_explore_results": {},
+        "arxiv_proof_results": {},
+        "openalex_explore_results": {}
     }
     
-    try:
-        explore_queries = json.loads(meta_data.get("explore", "[]"))
-    except Exception:
-        explore_queries = []
-        
-    try:
-        proof_queries = json.loads(meta_data.get("proof", "[]"))
-    except Exception:
-        proof_queries = []
-        
-    try:
-        tnj_obj = json.loads(meta_data.get("tnj", "{}"))
-        jargon_queries = tnj_obj.get("jargons", [])
-    except Exception:
-        jargon_queries = []
-
-    try:
-        topics_obj = json.loads(meta_data.get("topics", "[]"))
-        topics_queries = [
-            t.get("topic_title") for t in topics_obj 
-            if isinstance(t, dict) and t.get("topic_title")
-        ]
-    except Exception:
-        topics_queries = []
-
-    explore_tasks = [fetch_ddg_search(q) for q in explore_queries]
-    proof_tasks = [fetch_ddg_search(q) for q in proof_queries]
-    jargon_tasks = [fetch_wiki_jargon(q) for q in jargon_queries]
-    topics_tasks = [fetch_ddg_search(q) for q in topics_queries]
+    tnj_obj = meta_data.get("tnj", {})
+    if not isinstance(tnj_obj, dict): tnj_obj = {}
     
-    all_tasks = explore_tasks + proof_tasks + jargon_tasks + topics_tasks
+    jargon_queries = [q for q in tnj_obj.get("jargons", []) if isinstance(q, str)]
+    proof_queries = [q for q in meta_data.get("proof", []) if isinstance(q, str)]
+    explore_queries = [q for q in meta_data.get("explore", []) if isinstance(q, str)]
+
+    jargon_wiki_tasks = [fetch_wiki_summary(q, sem) for q in jargon_queries]
+    proof_wiki_tasks = [fetch_wiki_summary(q, sem) for q in proof_queries]
+    explore_wiki_tasks = [fetch_wiki_summary(q, sem) for q in explore_queries]
     
+    proof_arxiv_tasks = [fetch_arxiv_paper(q, sem) for q in proof_queries]
+    explore_openalex_tasks = [fetch_openalex_paper(q, sem) for q in explore_queries]
+
+
+    all_tasks = jargon_wiki_tasks + proof_wiki_tasks + explore_wiki_tasks + proof_arxiv_tasks + explore_openalex_tasks
+
     if not all_tasks:
-        print("[DEBUG] No external queries to process. Exiting process_external_indexing.")
+        print("[DEBUG] No terms to query via external indexing APIs. Exiting process_external_indexing.")
         return enriched_data
 
-    print(f"[DEBUG] Awaiting {len(all_tasks)} parallel external API requests...")
+    print(f"[DEBUG] Awaiting {len(all_tasks)} parallel academic & Wikipedia API requests...")
     all_results = await asyncio.gather(*all_tasks)
-    print("[DEBUG] External API requests complete.")
+    print("[DEBUG] External indexing API requests complete.")
     
     idx = 0
-    for q in explore_queries:
-        enriched_data["ddg_explore_results"][q] = all_results[idx]
-        idx += 1
-        
-    for q in proof_queries:
-        enriched_data["ddg_proof_results"][q] = all_results[idx]
-        idx += 1
-        
     for q in jargon_queries:
         enriched_data["wikipedia_jargon_results"][q] = all_results[idx]
         idx += 1
         
-    for q in topics_queries:
-        enriched_data["ddg_topics_results"][q] = all_results[idx]
+    for q in proof_queries:
+        enriched_data["wikipedia_proof_results"][q] = all_results[idx]
+        idx += 1
+        
+    for q in explore_queries:
+        enriched_data["wikipedia_explore_results"][q] = all_results[idx]
+        idx += 1
+
+    for q in proof_queries:
+        enriched_data["arxiv_proof_results"][q] = all_results[idx]
+        idx += 1
+
+    for q in explore_queries:
+        enriched_data["openalex_explore_results"][q] = all_results[idx]
         idx += 1
         
     return enriched_data
 
+
 @celery_app.task
-def analyse_media_drift(items_id: list[str]):
+def analyse_media_drift(items_id: list[str], custom_api_key: str = None):
     print(f"[DEBUG] Task started: analyse_media_drift. Payload length: {len(items_id)}")
     results = []
     meta_processor = Meta()
@@ -369,10 +444,13 @@ def analyse_media_drift(items_id: list[str]):
         if transcript_text and not transcript_text.startswith(("Error:", "Transaction Error:", "Transcription error:")):
             try:
                 print("[DEBUG] Triggering Gemini async data extraction...")
-                meta_data = asyncio.run(meta_processor.get_data(transcript_text))
-                print("[DEBUG] Triggering DuckDuckGo/Wikipedia external indexing...")
+                meta_data = asyncio.run(meta_processor.get_data(transcript_text, custom_api_key=custom_api_key))
+
+                
+                print("[DEBUG] Triggering Wikipedia external indexing...")
                 search_enrichment = asyncio.run(process_external_indexing(meta_data))
                 meta_data["external_indexing"] = search_enrichment
+                
                 print("[DEBUG] Meta analysis generation complete.")
             except Exception as api_error:
                 print(f"[ERROR] API Execution Failed: {str(api_error)}")
