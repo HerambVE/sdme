@@ -25,3 +25,11 @@ RUN python -c "import whisper; whisper.load_model('base')"
 
 # Copy the rest of the application source code into the container
 COPY . .
+
+# Grant execution permissions to entrypoint script
+RUN chmod +x entrypoint.sh
+
+# Expose port (Render automatically maps $PORT)
+EXPOSE 8000
+
+CMD ["./entrypoint.sh"]
