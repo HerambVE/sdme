@@ -14,14 +14,6 @@ import uuid
 # whisper is imported lazily inside get_whisper_model() to avoid loading
 # 140MB PyTorch weights into RAM at startup (critical for 512MB Render free tier)
 import xml.etree.ElementTree as ET
-
-# Force installation of nightly yt-dlp build for latest extractor patches
-subprocess.check_call(
-    [sys.executable, "-m", "pip", "install", "-U", "--pre", "yt-dlp"], 
-    stdout=subprocess.DEVNULL, 
-    stderr=subprocess.DEVNULL
-)
-
 import yt_dlp
 
 load_dotenv()

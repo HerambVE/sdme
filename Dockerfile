@@ -26,6 +26,10 @@ RUN pip install --default-timeout=1000 --no-cache-dir torch torchvision torchaud
 # 2. Install remaining application dependencies
 RUN pip install --default-timeout=1000 --no-cache-dir -r requirements.txt
 
+# 3. Install latest nightly yt-dlp build (done at build time, not at runtime)
+RUN pip install --default-timeout=1000 --no-cache-dir --pre yt-dlp
+
+
 # 3. Pre-cache Whisper model weights during the build phase
 RUN python -c "import whisper; whisper.load_model('base')"
 
