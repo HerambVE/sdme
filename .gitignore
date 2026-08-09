@@ -16,8 +16,7 @@ __pycache__/
 # Database States
 media_engine.db
 
-# Future Next.js Frontend Build Outputs (Pre-emptive)
-out/
+# Next.js intermediate build artifacts (out/ is intentionally committed for deployment)
 .next/
 node_modules/
 
