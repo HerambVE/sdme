@@ -150,9 +150,16 @@ celery_app = Celery(
 )
 
 
-print("[DEBUG] Loading Whisper model (base)...")
-model = whisper.load_model("base")
-print("[DEBUG] Whisper model loaded successfully.")
+_whisper_model_instance = None
+
+def get_whisper_model():
+    global _whisper_model_instance
+    if _whisper_model_instance is None:
+        print("[DEBUG] Lazy loading Whisper model (base)...")
+        _whisper_model_instance = whisper.load_model("base")
+        print("[DEBUG] Whisper model loaded successfully.")
+    return _whisper_model_instance
+
 
 HUMAN_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -426,7 +433,9 @@ def analyse_media_drift(items_id: list[str], custom_api_key: str = None):
         if os.path.exists(file_path):
             try:
                 print(f"[DEBUG] Initiating Whisper transcription on {file_path}...")
-                result = model.transcribe(file_path, fp16=False)
+                whisper_inst = get_whisper_model()
+                result = whisper_inst.transcribe(file_path, fp16=False)
+
                 transcript_text = result.get("text", "").strip()
                 segments = result.get("segments", [])
                 timestamped_transcript = format_timestamped_transcript(segments)
