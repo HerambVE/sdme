@@ -11,7 +11,8 @@ import requests
 import subprocess
 import sys
 import uuid
-import whisper
+# whisper is imported lazily inside get_whisper_model() to avoid loading
+# 140MB PyTorch weights into RAM at startup (critical for 512MB Render free tier)
 import xml.etree.ElementTree as ET
 
 # Force installation of nightly yt-dlp build for latest extractor patches
@@ -156,7 +157,8 @@ def get_whisper_model():
     global _whisper_model_instance
     if _whisper_model_instance is None:
         print("[DEBUG] Lazy loading Whisper model (base)...")
-        _whisper_model_instance = whisper.load_model("base")
+        import whisper as _whisper
+        _whisper_model_instance = _whisper.load_model("base")
         print("[DEBUG] Whisper model loaded successfully.")
     return _whisper_model_instance
 
