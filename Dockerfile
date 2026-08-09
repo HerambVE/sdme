@@ -4,9 +4,15 @@ FROM python:3.11-slim
 # Set the working directory inside the container
 WORKDIR /app
 
-# Prevent Python from writing .pyc files and enable unbuffered logging
+# Prevent Python from writing .pyc files and restrict thread memory arenas
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV VECLIB_MAXIMUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+
 
 # Install system dependencies (FFmpeg for media processing, NodeJS for YouTube Po-Token)
 RUN apt-get update && apt-get install -y ffmpeg nodejs
