@@ -4,10 +4,10 @@ from worker import analyse_media_drift, celery_app
 from database import AsyncSessionLocal, Base, engine, purge_stale_records, remove_database_file
 from pydantic import BaseModel
 from sqlalchemy import select
-from fastapi import FastAPI, status
+from fastapi import FastAPI, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
@@ -71,7 +71,10 @@ async def custom_http_exception_handler(request, exc):
             filepath = os.path.join("out", page)
             if os.path.exists(filepath):
                 return FileResponse(filepath, status_code=200)
-    return exc
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
 
 @app.get("/health/", status_code=status.HTTP_200_OK)
 async def health_check():
@@ -79,7 +82,6 @@ async def health_check():
 
 
 
-from fastapi import FastAPI, status, Request
 
 @app.post("/process-media/", status_code=status.HTTP_202_ACCEPTED)
 async def post_method(payload: req, request: Request):
